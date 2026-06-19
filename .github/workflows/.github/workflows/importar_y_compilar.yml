@@ -1,16 +1,10 @@
-name: Importar ZIP y compilar APK
+name: Compilar APK desde ZIP
 
 on:
-  push:
-    paths:
-      - "incoming/*.zip"
   workflow_dispatch:
 
-permissions:
-  contents: write
-
 jobs:
-  importar-compilar:
+  compilar:
     runs-on: ubuntu-latest
 
     steps:
@@ -19,8 +13,9 @@ jobs:
 
       - name: Buscar ZIP
         run: |
-          ZIP_FILE=$(ls -t incoming/*.zip | head -n 1)
+          ZIP_FILE=$(ls -t *.zip incoming/*.zip 2>/dev/null | head -n 1)
           echo "ZIP_FILE=$ZIP_FILE" >> $GITHUB_ENV
+          echo "ZIP encontrado: $ZIP_FILE"
 
       - name: Descomprimir ZIP
         run: |
@@ -28,27 +23,26 @@ jobs:
           mkdir temp_zip
           unzip -o "$ZIP_FILE" -d temp_zip
 
-      - name: Copiar proyecto al repo
+      - name: Buscar proyecto Android
         run: |
           PROJECT_DIR=$(find temp_zip -name "settings.gradle" -exec dirname {} \; | head -n 1)
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          echo "Proyecto: $PROJECT_DIR"
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: No se encontró settings.gradle dentro del ZIP"
-            exit 1
-          fi
+      - name: Copiar proyecto
+        run: |
+          rsync -a "$PROJECT_DIR"/ ./
 
-          rsync -a --exclude='.git' --exclude='.github' --exclude='incoming' "$PROJECT_DIR"/ ./
-
-      - name: Java 17
+      - name: Instalar Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Android SDK
+      - name: Instalar Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Gradle
+      - name: Instalar Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.7'
@@ -56,15 +50,7 @@ jobs:
       - name: Compilar APK
         run: gradle assembleDebug
 
-      - name: Guardar cambios del proyecto
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add . ':!incoming/*.zip'
-          git commit -m "Importar proyecto Android desde ZIP" || echo "Sin cambios"
-          git push
-
-      - name: Subir APK lista
+      - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
           name: Geo-Susu-Audio-APK
