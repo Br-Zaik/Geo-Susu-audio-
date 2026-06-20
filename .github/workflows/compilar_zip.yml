@@ -1,6 +1,10 @@
 name: Compilar APK desde ZIP
 
 on:
+  push:
+    paths:
+      - "*.zip"
+      - "incoming/*.zip"
   workflow_dispatch:
 
 jobs:
