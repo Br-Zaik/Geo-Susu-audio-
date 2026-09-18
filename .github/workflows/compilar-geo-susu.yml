@@ -1,0 +1,189 @@
+name: Compilar APK desde ZIP
+
+on:
+  push:
+    paths:
+      - "*.zip"
+      - "**/*.zip"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compilar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Comprobar Android SDK preinstalado
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+
+          if [ ! -f "$SDK/platforms/android-34/android.jar" ]; then
+            echo "ERROR: No existe Android SDK Platform 34 en $SDK"
+            exit 1
+          fi
+
+          if [ ! -d "$SDK/build-tools/34.0.0" ]; then
+            echo "ERROR: No existen Android Build Tools 34.0.0 en $SDK"
+            exit 1
+          fi
+
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          echo "$SDK/build-tools/34.0.0" >> "$GITHUB_PATH"
+
+          echo "Android SDK listo"
+
+      - name: Instalar Gradle 8.6
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: "8.6"
+          cache-provider: basic
+
+      - name: Buscar ZIP de Geo Susu
+        id: zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP=""
+
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            ZIP=$(git diff --name-only HEAD^ HEAD \
+              | grep -Ei '\.zip$' \
+              | grep -v '^extracted/' \
+              | head -n 1 || true)
+          fi
+
+          if [ -z "$ZIP" ]; then
+            ZIP=$(find . -type f -iname "*.zip" \
+              -not -path "./extracted/*" \
+              -printf '%T@ %p\n' \
+              | sort -nr \
+              | head -n 1 \
+              | cut -d' ' -f2- || true)
+          fi
+
+          if [ -z "$ZIP" ] || [ ! -f "$ZIP" ]; then
+            echo "ERROR: No se encontró ningún ZIP para compilar."
+            exit 1
+          fi
+
+          echo "ZIP encontrado: $ZIP"
+          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+
+      - name: Extraer ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf extracted salida
+          mkdir -p extracted salida
+
+          unzip -q "${{ steps.zip.outputs.zip }}" -d extracted
+
+      - name: Buscar proyecto Android
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SETTINGS=$(find extracted -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            | head -n 1 || true)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: El ZIP no contiene settings.gradle ni settings.gradle.kts"
+            find extracted -maxdepth 4 -type f | head -n 100
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS")
+
+          echo "Proyecto: $PROJECT_DIR"
+          echo "dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Preparar proyecto
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT="${{ steps.project.outputs.dir }}"
+
+          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > "$PROJECT/local.properties"
+
+          if [ -f "$PROJECT/gradlew" ]; then
+            chmod +x "$PROJECT/gradlew"
+          fi
+
+          java -version
+          gradle --version
+          echo "SDK: $ANDROID_HOME"
+
+      - name: Compilar APK debug
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT="${{ steps.project.outputs.dir }}"
+          cd "$PROJECT"
+
+          if [ -f "./gradlew" ]; then
+            ./gradlew clean assembleDebug --no-daemon --stacktrace
+          else
+            gradle clean assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: Preparar APK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT="${{ steps.project.outputs.dir }}"
+
+          APK=$(find "$PROJECT" -type f \
+            -path "*/build/outputs/apk/debug/*.apk" \
+            | head -n 1 || true)
+
+          if [ -z "$APK" ]; then
+            APK=$(find "$PROJECT" -type f -name "*.apk" | head -n 1 || true)
+          fi
+
+          if [ -z "$APK" ] || [ ! -f "$APK" ]; then
+            echo "ERROR: Gradle terminó pero no se encontró el APK."
+            exit 1
+          fi
+
+          cp "$APK" salida/Geo-Susu-v196-debug.apk
+
+          sha256sum salida/Geo-Susu-v196-debug.apk \
+            > salida/Geo-Susu-v196-debug.apk.sha256
+
+          echo "APK listo"
+
+      - name: Subir APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: Geo-Susu-v196-APK
+          path: |
+            salida/Geo-Susu-v196-debug.apk
+            salida/Geo-Susu-v196-debug.apk.sha256
+          if-no-files-found: error
